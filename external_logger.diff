@@ -1,0 +1,704 @@
+diff --git a/src/Makefile.am b/src/Makefile.am
+index c21a073bdbefbb4547e45ed13b7a8a563854fd82..14d9d2dadb0d6b1749c977700fbc78d84035db1e 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -2088,6 +2088,14 @@ liblogrotate_container_logger_la_SOURCES =			\
+ liblogrotate_container_logger_la_CPPFLAGS = $(MESOS_CPPFLAGS)
+ liblogrotate_container_logger_la_LDFLAGS = $(MESOS_MODULE_LDFLAGS)
+ 
++# Library containing the external container logger.
++pkgmodule_LTLIBRARIES += libexternal_container_logger.la
++libexternal_container_logger_la_SOURCES =			\
++  slave/container_loggers/lib_externallogger.hpp			\
++  slave/container_loggers/lib_externallogger.cpp
++libexternal_container_logger_la_CPPFLAGS = $(MESOS_CPPFLAGS)
++libexternal_container_logger_la_LDFLAGS = $(MESOS_MODULE_LDFLAGS)
++
+ # Library containing the fixed resource estimator.
+ pkgmodule_LTLIBRARIES += libfixed_resource_estimator.la
+ libfixed_resource_estimator_la_SOURCES = slave/resource_estimators/fixed.cpp
+@@ -2433,7 +2441,8 @@ dist_check_SCRIPTS +=						\
+   tests/persistent_volume_framework_test.sh			\
+   tests/python_framework_test.sh				\
+   tests/test_http_framework_test.sh				\
+-  tests/test_framework_test.sh
++  tests/test_framework_test.sh                  \
++  tests/container_logger_external.sh
+ 
+ ../3rdparty/libgmock.la:
+ 	@cd ../3rdparty && $(MAKE) $(AM_MAKEFLAGS) libgmock.la
+diff --git a/src/slave/container_loggers/lib_externallogger.hpp b/src/slave/container_loggers/lib_externallogger.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..507fd018193872c51464ddd915e26539bb566e29
+--- /dev/null
++++ b/src/slave/container_loggers/lib_externallogger.hpp
+@@ -0,0 +1,129 @@
++// Licensed to the Apache Software Foundation (ASF) under one
++// or more contributor license agreements.  See the NOTICE file
++// distributed with this work for additional information
++// regarding copyright ownership.  The ASF licenses this file
++// to you under the Apache License, Version 2.0 (the
++// "License"); you may not use this file except in compliance
++// with the License.  You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++#ifndef __SLAVE_CONTAINER_LOGGERS_EXTERNAL_HPP__
++#define __SLAVE_CONTAINER_LOGGERS_EXTERNAL_HPP__
++
++#include <string>
++
++#include <mesos/mesos.hpp>
++
++#include <mesos/slave/container_logger.hpp>
++
++#include <process/future.hpp>
++#include <process/owned.hpp>
++#include <process/subprocess.hpp>
++
++#include <stout/try.hpp>
++#include <stout/nothing.hpp>
++#include <stout/option.hpp>
++
++#include <stout/os/exists.hpp>
++
++namespace mesos {
++namespace internal {
++namespace logger {
++
++// Forward declaration.
++class ExternalContainerLoggerProcess;
++
++
++struct Flags : public virtual flags::FlagsBase
++{
++  Flags()
++  {
++    add(&Flags::external_logger_binary,
++        "external_logger_binary",
++        "external_logger_script",
++        "Path to the external command which will read STDIN for logs",
++        static_cast<const std::string*>(nullptr),
++        [](const std::string& executablePath) -> Option<Error> {
++          if (!os::exists(executablePath)) {
++            return Error("Cannot find: " + executablePath);
++          }
++
++          // Check the specified command is an executable.
++          Try<bool> isExecutable = os::access(executablePath, X_OK);
++          if (isExecutable.isSome()) {
++            if (!isExecutable.get()) {
++              return Error("Not executable by Mesos: " + executablePath);
++            }
++          } else {
++            return Error("Cannot stat for access check: " + executablePath);
++          }
++
++          return None();
++        });
++
++    add(&Flags::mesos_field_prefix,
++        "mesos_field_prefix",
++        "Prefix to add to environment variables containing task data passed\n"
++        "to the external logger process.",
++        "MESOS_LOG_");
++
++    add(&Flags::stream_name_field,
++        "stream_name_field",
++        "Name of the field to store the stdout/stderr stream identifier under",
++        "STREAM");
++
++    add(&Flags::executor_info_json_field,
++        "executor_info_json_field",
++        "Name of the environment variable to store JSON serialization of \n"
++        "executorInfo under. Note this field is also concatenated with \n"
++        "the value of --mesos_field_prefix.",
++        "MESOS_EXECUTORINFO_JSON");
++  }
++
++  std::string external_logger_binary;
++  std::string mesos_field_prefix;
++  std::string stream_name_field;
++  std::string executor_info_json_field;
++};
++
++// The external process container logger.
++//
++// Executors and tasks launched through this container logger will have their
++// stdout and stderr piped to the specified external logger, launched with
++// metadata in environment variables.
++class ExternalContainerLogger : public mesos::slave::ContainerLogger
++{
++public:
++  ExternalContainerLogger(const Flags& _flags);
++
++  virtual ~ExternalContainerLogger();
++
++  // This is a noop.  The external container logger has nothing to initialize.
++  virtual Try<Nothing> initialize();
++
++  // Tells the subprocess to redirect the executor/task's stdout and stderr
++  // to the external command.
++  virtual process::Future<mesos::slave::ContainerLogger::SubprocessInfo>
++  prepare(
++      const ExecutorInfo& executorInfo,
++      const std::string& sandboxDirectory,
++      const Option<std::string>& user);
++
++protected:
++  Flags flags;
++  process::Owned<ExternalContainerLoggerProcess> process;
++};
++
++
++} // namespace logger {
++} // namespace internal {
++} // namespace mesos {
++
++#endif // __SLAVE_CONTAINER_LOGGERS_EXTERNAL_HPP__
+diff --git a/src/slave/container_loggers/lib_externallogger.cpp b/src/slave/container_loggers/lib_externallogger.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..27bf8abc6072708b3d9cdb69ae0286b2d470487f
+--- /dev/null
++++ b/src/slave/container_loggers/lib_externallogger.cpp
+@@ -0,0 +1,290 @@
++// Licensed to the Apache Software Foundation (ASF) under one
++// or more contributor license agreements.  See the NOTICE file
++// distributed with this work for additional information
++// regarding copyright ownership.  The ASF licenses this file
++// to you under the Apache License, Version 2.0 (the
++// "License"); you may not use this file except in compliance
++// with the License.  You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++#include <string>
++
++#include <mesos/mesos.hpp>
++
++#include <mesos/module/container_logger.hpp>
++
++#include <mesos/slave/container_logger.hpp>
++
++#include <process/dispatch.hpp>
++#include <process/future.hpp>
++#include <process/owned.hpp>
++#include <process/process.hpp>
++#include <process/subprocess.hpp>
++
++#include <stout/error.hpp>
++#include <stout/try.hpp>
++#include <stout/nothing.hpp>
++#include <stout/option.hpp>
++#include <stout/path.hpp>
++
++#include <stout/os/environment.hpp>
++#include <stout/os/fcntl.hpp>
++#include <stout/os/killtree.hpp>
++
++#include <stout/protobuf.hpp>
++#include <stout/stringify.hpp>
++
++#ifdef __linux__
++#include <linux/systemd.hpp>
++#endif // __linux__
++
++#include "lib_externallogger.hpp"
++
++using namespace mesos;
++using namespace process;
++
++using mesos::slave::ContainerLogger;
++
++namespace mesos {
++namespace internal {
++namespace logger {
++
++using SubprocessInfo = ContainerLogger::SubprocessInfo;
++
++class ExternalContainerLoggerProcess :
++  public Process<ExternalContainerLoggerProcess>
++{
++public:
++  ExternalContainerLoggerProcess(const Flags& _flags) : flags(_flags) {}
++
++  // Spawns two subprocesses that should read from stdin to receive the stdout
++  // and stderr log streams from the task.
++  Future<SubprocessInfo> prepare(
++      const ExecutorInfo& executorInfo,
++      const std::string& sandboxDirectory,
++      const Option<std::string>& user)
++  {
++    // Setup a blank environment so as not to interfere with the executed
++    // subprocess.
++    std::map<std::string, std::string> environment;
++
++    // At a minimum we want to put the sandboxDirectory into the environment
++    // since it's extremely convenient for shell scripts.
++    environment.insert(
++        std::pair<std::string, std::string>(flags.mesos_field_prefix +
++          "SANDBOX_DIRECTORY", sandboxDirectory)
++    );
++    // Also insert the value of the user parameter so the external script
++    // can decide if it wants to sudo or change ownerships. The prefix is
++    // used because just setting USER could affect some commands
++    // unintentionally.
++    if (user.isSome()) {
++        environment.insert(
++            std::pair<std::string, std::string>(
++                flags.mesos_field_prefix + "USER", user.get())
++        );
++    }
++
++    // If json protobuf var is not blank, set it into the environment.
++    if (flags.executor_info_json_field != "") {
++      JSON::Object jsonObjExecInfo = JSON::protobuf(executorInfo);
++      std::string jsonExecInfo = stringify(jsonObjExecInfo);
++      environment[flags.mesos_field_prefix + flags.executor_info_json_field]
++                  = jsonExecInfo;
++    }
++
++    // NOTE: We manually construct a pipe here instead of using
++    // `Subprocess::PIPE` so that the ownership of the FDs is properly
++    // represented.  The `Subprocess` spawned below owns the read-end
++    // of the pipe and will be solely responsible for closing that end.
++    // The ownership of the write-end will be passed to the caller
++    // of this function.
++    int pipefd[2];
++    if (::pipe(pipefd) == -1) {
++      return Failure(ErrnoError("Failed to create pipe").message);
++    }
++
++    Subprocess::IO::InputFileDescriptors outfds;
++    outfds.read = pipefd[0];
++    outfds.write = pipefd[1];
++
++    // NOTE: We need to `cloexec` this FD so that it will be closed when
++    // the child subprocess is spawned and so that the FD will not be
++    // inherited by the second child for stderr.
++    Try<Nothing> cloexec = os::cloexec(outfds.write.get());
++    if (cloexec.isError()) {
++      os::close(outfds.read);
++      os::close(outfds.write.get());
++      return Failure("Failed to cloexec: " + cloexec.error());
++    }
++
++    // If we are on systemd, then extend the life of the process as we
++    // do with the executor. Any grandchildren's lives will also be
++    // extended.
++    std::vector<Subprocess::ParentHook> parentHooks;
++#ifdef __linux__
++    if (systemd::enabled()) {
++      parentHooks.emplace_back(Subprocess::ParentHook(
++          &systemd::mesos::extendLifetime));
++    }
++#endif // __linux__
++
++    // Each logger needs to SETSID so it can continue logging if the agent
++    // dies.
++    std::vector<Subprocess::ChildHook> childHooks;
++    childHooks.emplace_back(Subprocess::ChildHook::SETSID());
++
++    // Set the stream name for the stdout stream
++    environment[flags.mesos_field_prefix + flags.stream_name_field] = "STDOUT";
++
++    Try<Subprocess> outProcess = subprocess(
++        flags.external_logger_binary,
++        std::vector<std::string>{std::string(flags.external_logger_binary)},
++        Subprocess::FD(outfds.read, Subprocess::IO::OWNED),
++        Subprocess::PATH("/dev/null"),
++        Subprocess::FD(STDERR_FILENO),
++        nullptr,
++        environment,
++        None(),
++        parentHooks,
++        childHooks);
++
++    if (outProcess.isError()) {
++      os::close(outfds.write.get());
++      return Failure("Failed to create logger process: " +
++                     outProcess.error());
++    }
++
++    // NOTE: We manually construct a pipe here to properly express
++    // ownership of the FDs.  See the NOTE above.
++    if (::pipe(pipefd) == -1) {
++      os::close(outfds.write.get());
++      os::killtree(outProcess.get().pid(), SIGKILL);
++      return Failure(ErrnoError("Failed to create pipe").message);
++    }
++
++    Subprocess::IO::InputFileDescriptors errfds;
++    errfds.read = pipefd[0];
++    errfds.write = pipefd[1];
++
++    // NOTE: We need to `cloexec` this FD so that it will be closed when
++    // the child subprocess is spawned.
++    cloexec = os::cloexec(errfds.write.get());
++    if (cloexec.isError()) {
++      os::close(outfds.write.get());
++      os::close(errfds.read);
++      os::close(errfds.write.get());
++      os::killtree(outProcess.get().pid(), SIGKILL);
++      return Failure("Failed to cloexec: " + cloexec.error());
++    }
++
++    // Set the stream name for the stderr stream
++    environment[flags.mesos_field_prefix + flags.stream_name_field] = "STDERR";
++
++    Try<Subprocess> errProcess = subprocess(
++        flags.external_logger_binary,
++        std::vector<std::string>{flags.external_logger_binary},
++        Subprocess::FD(errfds.read, Subprocess::IO::OWNED),
++        Subprocess::PATH("/dev/null"),
++        Subprocess::FD(STDERR_FILENO),
++        nullptr,
++        environment,
++        None(),
++        parentHooks,
++        childHooks);
++
++    if (errProcess.isError()) {
++      os::close(outfds.write.get());
++      os::close(errfds.write.get());
++      os::killtree(outProcess.get().pid(), SIGKILL);
++      return Failure("Failed to create logger process: " +
++          errProcess.error());
++    }
++
++    // The ownership of these FDs is given to the caller of this function.
++    ContainerLogger::SubprocessInfo info;
++    info.out = SubprocessInfo::IO::FD(outfds.write.get());
++    info.err = SubprocessInfo::IO::FD(errfds.write.get());
++    return info;
++  }
++protected:
++    Flags flags;
++};
++
++
++ExternalContainerLogger::ExternalContainerLogger(const Flags& _flags)
++  : flags(_flags),
++    process(new ExternalContainerLoggerProcess(flags))
++{
++  spawn(process.get());
++}
++
++
++ExternalContainerLogger::~ExternalContainerLogger()
++{
++  terminate(process.get());
++  wait(process.get());
++}
++
++
++Try<Nothing> ExternalContainerLogger::initialize()
++{
++  return Nothing();
++}
++
++Future<ContainerLogger::SubprocessInfo>
++ExternalContainerLogger::prepare(
++    const ExecutorInfo& executorInfo,
++    const std::string& sandboxDirectory,
++    const Option<std::string>& user)
++{
++  return dispatch(
++      process.get(),
++      &ExternalContainerLoggerProcess::prepare,
++      executorInfo,
++      sandboxDirectory,
++      user);
++}
++
++} // namespace logger {
++} // namespace internal {
++} // namespace mesos {
++
++mesos::modules::Module<ContainerLogger>
++org_apache_mesos_ExternalContainerLogger(
++    MESOS_MODULE_API_VERSION,
++    MESOS_VERSION,
++    "Apache Mesos",
++    "modules@mesos.apache.org",
++    "External Process Logger module.",
++    nullptr,
++    [](const Parameters& parameters) -> ContainerLogger* {
++      // Convert `parameters` into a map.
++      std::map<std::string, std::string> values;
++      foreach (const Parameter& parameter, parameters.parameter()) {
++        values[parameter.key()] = parameter.value();
++      }
++
++      // Load and validate flags from the map.
++      mesos::internal::logger::Flags flags;
++      Try<flags::Warnings> load = flags.load(values);
++
++      if (load.isError()) {
++        LOG(ERROR) << "Failed to parse parameters: " << load.error();
++        return nullptr;
++      }
++
++      // Log any flag warnings.
++      foreach (const flags::Warning& warning, load->warnings) {
++        LOG(WARNING) << warning.message;
++      }
++
++      return new mesos::internal::logger::ExternalContainerLogger(flags);
++    });
+diff --git a/src/tests/container_logger_external.sh b/src/tests/container_logger_external.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..aaa43e4af77fad9b62fbe37011cc6df2107c209d
+--- /dev/null
++++ b/src/tests/container_logger_external.sh
+@@ -0,0 +1,35 @@
++#!/bin/bash
++# This script provides a dummy logging process for testing the external
++# container logger.
++
++# Check we are a process group leader
++if ! ps -o pid,sid | grep ^$$ ; then
++    echo "Log process is not the session group leader."
++    exit 1
++fi
++
++# This is the one extra path we get.
++if [ -z "$MESOS_LOG_SANDBOX_DIRECTORY" ]; then
++    echo "MESOS_LOG_SANDBOX_DIRECTORY was empty."
++    exit 1
++fi
++
++if [ -z "$MESOS_LOG_STREAM" ]; then
++    echo "MESOS_LOG_STREAM was empty."
++    exit 1
++fi
++
++if [ -z "$MESOS_LOG_MESOS_EXECUTORINFO_JSON" ]; then
++    echo "MESOS_LOG_MESOS_EXECUTORINFO_JSON was empty."
++    exit 1
++fi
++
++output_name=${MESOS_LOG_SANDBOX_DIRECTORY}/${MESOS_LOG_STREAM}.log
++
++# Write the parsed data to some separate files so the test can read it.
++echo "$MESOS_LOG_MESOS_EXECUTORINFO_JSON" > ${MESOS_LOG_SANDBOX_DIRECTORY}/${MESOS_LOG_STREAM}.json
++
++# Very simple logging implementation.
++while read line; do
++    echo "$line" >> $output_name
++done
+diff --git a/src/tests/container_logger_tests.cpp b/src/tests/container_logger_tests.cpp
+index 589d6a9df7ce964052355be41597ef11677ca03d..6cd25765a06989ee1fb60c59a539103a8243a76e 100644
+--- a/src/tests/container_logger_tests.cpp
++++ b/src/tests/container_logger_tests.cpp
+@@ -100,9 +100,10 @@ namespace tests {
+ #ifndef __WINDOWS__
+ const char LOGROTATE_CONTAINER_LOGGER_NAME[] =
+   "org_apache_mesos_LogrotateContainerLogger";
++const char EXTERNAL_CONTAINER_LOGGER_NAME[] =
++  "org_apache_mesos_ExternalContainerLogger";
+ #endif // __WINDOWS__
+ 
+-
+ // Definition of a mock ContainerLogger to be used in tests with gmock.
+ class MockContainerLogger : public ContainerLogger
+ {
+@@ -774,6 +775,141 @@ TEST_P(UserContainerLoggerTest, ROOT_LOGROTATE_RotateWithSwitchUserTrueOrFalse)
+   EXPECT_LE(2040u, stdoutSize->kilobytes());
+   EXPECT_GE(2048u, stdoutSize->kilobytes());
+ }
++
++// Test that the external container logger launches the supplied process
++// and receives the correct environment variables.
++TEST_F(ContainerLoggerTest, EXTERNAL_ReceiveEnvironment)
++  {
++    // Create a master, agent, and framework.
++    Try<Owned<cluster::Master>> master = StartMaster();
++    ASSERT_SOME(master);
++
++    Future<SlaveRegisteredMessage> slaveRegisteredMessage =
++    FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
++
++    // We'll need access to these flags later.
++    slave::Flags flags = CreateSlaveFlags();
++
++    // Use the non-default container logger that runs an external program.
++    flags.container_logger = EXTERNAL_CONTAINER_LOGGER_NAME;
++
++    Fetcher fetcher;
++
++    // We use an actual containerizer + executor since we want something to run.
++    Try<MesosContainerizer*> _containerizer =
++    MesosContainerizer::create(flags, false, &fetcher);
++
++    CHECK_SOME(_containerizer);
++    Owned<MesosContainerizer> containerizer(_containerizer.get());
++
++    Owned<MasterDetector> detector = master.get()->createDetector();
++
++    Try<Owned<cluster::Slave>> slave =
++    StartSlave(detector.get(), containerizer.get(), flags);
++    ASSERT_SOME(slave);
++
++    AWAIT_READY(slaveRegisteredMessage);
++    SlaveID slaveId = slaveRegisteredMessage.get().slave_id();
++
++    MockScheduler sched;
++    MesosSchedulerDriver driver(
++        &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
++
++    Future<FrameworkID> frameworkId;
++    EXPECT_CALL(sched, registered(&driver, _, _))
++    .WillOnce(FutureArg<1>(&frameworkId));
++
++    // Wait for an offer, and start a task.
++    Future<vector<Offer>> offers;
++    EXPECT_CALL(sched, resourceOffers(&driver, _))
++    .WillOnce(FutureArg<1>(&offers))
++    .WillRepeatedly(Return()); // Ignore subsequent offers.
++
++    driver.start();
++    AWAIT_READY(frameworkId);
++
++    AWAIT_READY(offers);
++    EXPECT_NE(0u, offers.get().size());
++
++    // See container_logger_external.sh (defined in module.cpp) which fails
++    // with status 1 if the log environment is not set. This task provides
++    // some simple known log lines.
++    TaskInfo task = createTask(
++        offers.get()[0],
++        "echo \"Test stdout Log Line\" ; echo \"Test stderr Log Line\" 1>&2");
++
++    Future<TaskStatus> statusRunning;
++    Future<TaskStatus> statusFinished;
++    EXPECT_CALL(sched, statusUpdate(&driver, _))
++    .WillOnce(FutureArg<1>(&statusRunning))
++    .WillOnce(FutureArg<1>(&statusFinished))
++    .WillRepeatedly(Return()); // Ignore subsequent updates.
++
++    driver.launchTasks(offers.get()[0].id(),
++          { task});
++
++    AWAIT_READY(statusRunning);
++    EXPECT_EQ(TASK_RUNNING, statusRunning.get().state());
++
++    AWAIT_READY(statusFinished);
++    EXPECT_EQ(TASK_FINISHED, statusFinished.get().state());
++
++    driver.stop();
++    driver.join();
++
++    // Like the logrotate logger, our script processes should have exited once
++    // our task finished (as they're just a bash while loop reading stdin).
++    Try<os::ProcessTree> pstrees = os::pstree(0);
++    ASSERT_SOME(pstrees);
++    foreach (const os::ProcessTree& pstree, pstrees.get().children)
++      {
++        // Wait for the logger subprocesses to exit, for up to 5 seconds each.
++        Duration waited = Duration::zero();
++        do
++          {
++            if (!os::exists(pstree.process.pid))
++              {
++                break;
++              }
++
++            // Push the clock ahead to speed up the reaping of subprocesses.
++            Clock::pause();
++            Clock::settle();
++            Clock::advance(Seconds(1));
++            Clock::resume();
++
++            os::sleep(Milliseconds(100));
++            waited += Milliseconds(100);
++          }while (waited < Seconds(5));
++
++        EXPECT_LE(waited, Seconds(5));
++      }
++
++    // Check for the expected file outputs from the test script logger.
++    string sandboxDirectory = path::join(
++        slave::paths::getExecutorPath(
++            flags.work_dir,
++            slaveId,
++            frameworkId.get(),
++            statusRunning->executor_id()),
++        "runs",
++        "latest");
++
++    ASSERT_TRUE(os::exists(sandboxDirectory));
++
++    // Test the logger script was happy with the STDOUT environment
++    // (see container_logger_external.sh)
++    string stdoutPath = path::join(sandboxDirectory, "STDOUT.log");
++    ASSERT_TRUE(os::exists(stdoutPath));
++    EXPECT_GT(os::stat::size(stdoutPath)->bytes(), 0u);
++
++    // Test the logger script was happy with the STDERR environment
++    // (see container_logger_external.sh)
++    string stderrPath = path::join(sandboxDirectory, "STDERR.log");
++    ASSERT_TRUE(os::exists(stderrPath));
++    EXPECT_GT(os::stat::size(stderrPath)->bytes(), 0u);
++  }
++
+ #endif // __WINDOWS__
+ 
+ } // namespace tests {
+diff --git a/src/tests/module.hpp b/src/tests/module.hpp
+index e661d95fa44fc1aedfe83c564c826d5b7d32c85b..845d46db53711c1d4a4c629c886fe87951f5da25 100644
+--- a/src/tests/module.hpp
++++ b/src/tests/module.hpp
+@@ -52,6 +52,7 @@ enum ModuleID
+   TestMasterContender,
+   TestMasterDetector,
+   LogrotateContainerLogger,
++  ExternalContainerLogger,
+   TestHttpBasicAuthenticator
+ };
+ 
+diff --git a/src/tests/module.cpp b/src/tests/module.cpp
+index 5b83fd6358ddea4c9d849b8992e1a6040ef74505..f99908e679939aa1822f22ab192c91e5dc02c665 100644
+--- a/src/tests/module.cpp
++++ b/src/tests/module.cpp
+@@ -21,6 +21,7 @@
+ #include <stout/os.hpp>
+ #include <stout/path.hpp>
+ #include <stout/stringify.hpp>
++#include <stout/os/environment.hpp>
+ 
+ #include "messages/messages.hpp"
+ #include "module/manager.hpp"
+@@ -125,6 +126,20 @@ static void addContainerLoggerModules(Modules* modules)
+   moduleParameter = module->add_parameters();
+   moduleParameter->set_key("logrotate_stdout_options");
+   moduleParameter->set_value("rotate 4");
++
++  // Add the third container logger module
++  library = modules->add_libraries();
++  library->set_file(getModulePath("external_container_logger"));
++
++  addModule(library,
++            ExternalContainerLogger,
++            "org_apache_mesos_ExternalContainerLogger");
++
++  // Set the external logger to use the test bash script
++  module = library->mutable_modules(0);
++  moduleParameter = module->add_parameters();
++  moduleParameter->set_key("external_logger_binary");
++  moduleParameter->set_value(getTestScriptPath("container_logger_external.sh"));
+ }
+ 
+ 
