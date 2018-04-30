@@ -1250,22 +1250,29 @@ __EOF__
     JAVA_JVM_LIBRARY=$dir/libjvm.dylib
   elif test "$OS_NAME" = "linux"; then
     for arch in amd64 i386 arm aarch64 ppc64 ppc64le s390 s390x; do
-      dir="$JAVA_HOME/jre/lib/$arch/server"
+      # JDK 9+ doesn't use the jre/ folder or arch in the path
+      dir="$JAVA_HOME/lib/server"
+      legacy_dir="$JAVA_HOME/jre/lib/$arch/server"
+
+      # Note that these are libtool specific flags.
       if test -e "$dir"; then
-	# Note that these are libtool specific flags.
-	JAVA_TEST_LDFLAGS="-L$dir -R$dir -Wl,-ljvm"
-	JAVA_JVM_LIBRARY=$dir/libjvm.so
-	break;
+        JAVA_TEST_LDFLAGS="-L$dir -R$dir -Wl,-ljvm"
+        JAVA_JVM_LIBRARY=$dir/libjvm.so
+        break;
+      elif test -e "$legacy_dir"; then
+        JAVA_TEST_LDFLAGS="-L$legacy_dir -R$legacy_dir -Wl,-ljvm"
+        JAVA_JVM_LIBRARY=$legacy_dir/libjvm.so
+        break;
       fi
     done
   elif test "$OS_NAME" = "freebsd"; then
     for arch in amd64 i386 arm; do
       dir="$JAVA_HOME/jre/lib/$arch/server"
       if test -e "$dir"; then
-	# Note that these are libtool specific flags.
-	JAVA_TEST_LDFLAGS="-L$dir -R$dir -pthread -Wl,-ljvm"
-	JAVA_JVM_LIBRARY=$dir/libjvm.so
-	break;
+        # Note that these are libtool specific flags.
+        JAVA_TEST_LDFLAGS="-L$dir -R$dir -pthread -Wl,-ljvm"
+        JAVA_JVM_LIBRARY=$dir/libjvm.so
+        break;
       fi
     done
   fi
