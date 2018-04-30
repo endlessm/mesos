@@ -2016,54 +2016,54 @@ nodist_libjava_la_SOURCES =						\
 BUILT_SOURCES += $(nodist_libjava_la_SOURCES)
 
 java/jni/org_apache_mesos_MesosSchedulerDriver.h: $(MESOS_JAR)
-	$(JAVA_HOME)/bin/javah -d java/jni				\
+	$(JAVA_HOME)/bin/javac -h java/jni				\
 	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
-	  org.apache.mesos.MesosSchedulerDriver
+	$(srcdir)/java/src/org/apache/mesos/MesosSchedulerDriver.java
 
 java/jni/org_apache_mesos_MesosExecutorDriver.h: $(MESOS_JAR)
-	$(JAVA_HOME)/bin/javah -d java/jni				\
+	$(JAVA_HOME)/bin/javac -h java/jni				\
 	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
-          org.apache.mesos.MesosExecutorDriver
+	$(srcdir)/java/src/org/apache/mesos/MesosExecutorDriver.java
 
 java/jni/org_apache_mesos_Log.h: $(MESOS_JAR)
-	$(JAVA_HOME)/bin/javah -d java/jni				\
+	$(JAVA_HOME)/bin/javac -h java/jni				\
 	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
-	  org.apache.mesos.Log
+	$(srcdir)/java/src/org/apache/mesos/Log.java
 
 java/jni/org_apache_mesos_state_AbstractState.h: $(MESOS_JAR)
-	$(JAVA_HOME)/bin/javah -d java/jni				\
+	$(JAVA_HOME)/bin/javac -h java/jni				\
 	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
-	  org.apache.mesos.state.AbstractState
+	$(srcdir)/java/src/org/apache/mesos/state/AbstractState.java
 
 java/jni/org_apache_mesos_state_LevelDBState.h: $(MESOS_JAR)
-	$(JAVA_HOME)/bin/javah -d java/jni				\
+	$(JAVA_HOME)/bin/javac -h java/jni				\
 	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
-	  org.apache.mesos.state.LevelDBState
+	$(srcdir)/java/src/org/apache/mesos/state/LevelDBState.java
 
 java/jni/org_apache_mesos_state_LogState.h: $(MESOS_JAR)
-	$(JAVA_HOME)/bin/javah -d java/jni				\
+	$(JAVA_HOME)/bin/javac -h java/jni				\
 	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
-	  org.apache.mesos.state.LogState
+	$(srcdir)/java/src/org/apache/mesos/state/LogState.java
 
 java/jni/org_apache_mesos_state_Variable.h: $(MESOS_JAR)
-	$(JAVA_HOME)/bin/javah -d java/jni				\
+	$(JAVA_HOME)/bin/javac -h java/jni				\
 	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
-	  org.apache.mesos.state.Variable
+	$(srcdir)/java/src/org/apache/mesos/state/Variable.java
 
 java/jni/org_apache_mesos_state_ZooKeeperState.h: $(MESOS_JAR)
-	$(JAVA_HOME)/bin/javah -d java/jni				\
+	$(JAVA_HOME)/bin/javac -h java/jni				\
 	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
-	  org.apache.mesos.state.ZooKeeperState
+	$(srcdir)/java/src/org/apache/mesos/state/ZooKeeperState.java
 
 java/jni/org_apache_mesos_v1_scheduler_V1Mesos.h: $(MESOS_JAR)
-	$(JAVA_HOME)/bin/javah -d java/jni				\
+	$(JAVA_HOME)/bin/javac -h java/jni				\
 	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
-	  org.apache.mesos.v1.scheduler.V1Mesos
+	$(srcdir)/java/src/org/apache/mesos/v1/scheduler/V1Mesos.java
 
 java/jni/org_apache_mesos_v1_scheduler_V0Mesos.h: $(MESOS_JAR)
-	$(JAVA_HOME)/bin/javah -d java/jni				\
+	$(JAVA_HOME)/bin/javac -h java/jni				\
 	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
-	  org.apache.mesos.v1.scheduler.V0Mesos
+	$(srcdir)/java/src/org/apache/mesos/v1/scheduler/V0Mesos.java
 
 $(EXAMPLES_JAR): $(EXAMPLES_SOURCE)
 	@echo "Building examples.jar ..."
